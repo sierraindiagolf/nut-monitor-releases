@@ -1,0 +1,12 @@
+[Unit]
+Description=NUT UPS Dynamic Configuration Generator
+Before=nut-driver-enumerator.service nut-driver.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/nut-dashboard/generate_ups_conf.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=nut.target
