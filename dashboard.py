@@ -106,6 +106,28 @@ def get_ups_status(ups_name):
     except Exception as e:
         return {"error": str(e)}
 
+def read_csv_rows(filepath, is_gz):
+    fieldnames = ["timestamp", "battery_charge_pct", "battery_voltage", "input_voltage", "ups_load_pct", "ups_status"]
+    rows = []
+    try:
+        if is_gz:
+            with gzip.open(filepath, 'rt', encoding='utf-8') as f:
+                reader = csv.DictReader(f, fieldnames=fieldnames)
+                for row in reader:
+                    if row.get("timestamp") == "timestamp":
+                        continue
+                    rows.append(row)
+        else:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f, fieldnames=fieldnames)
+                for row in reader:
+                    if row.get("timestamp") == "timestamp":
+                        continue
+                    rows.append(row)
+    except Exception:
+        pass
+    return rows
+
 def get_ups_history(ups_name):
     limit = 2880  # 24 hours of data at 30s intervals
     collected_rows = []
@@ -125,31 +147,20 @@ def get_ups_history(ups_name):
         if not os.path.exists(filepath):
             continue
             
-        try:
-            if is_gz:
-                with gzip.open(filepath, 'rt', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    file_rows = list(reader)
-            else:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    file_rows = list(reader)
-            
-            # Process rows from newest to oldest in this file
-            file_rows.reverse()
-            for row in file_rows:
-                # Estimate charge if missing/NA but battery voltage is present
-                if (row.get('battery_charge_pct') == 'NA' or not row.get('battery_charge_pct')) and row.get('battery_voltage') != 'NA':
-                    row['battery_charge_pct'] = estimate_charge(
-                        row['battery_voltage'],
-                        row.get('ups_status', 'OL'),
-                        row.get('ups_load_pct', '0')
-                    )
-                collected_rows.append(row)
-                if len(collected_rows) >= limit:
-                    break
-        except Exception:
-            continue
+        file_rows = read_csv_rows(filepath, is_gz)
+        # Process rows from newest to oldest in this file
+        file_rows.reverse()
+        for row in file_rows:
+            # Estimate charge if missing/NA but battery voltage is present
+            if (row.get('battery_charge_pct') == 'NA' or not row.get('battery_charge_pct')) and row.get('battery_voltage') != 'NA':
+                row['battery_charge_pct'] = estimate_charge(
+                    row['battery_voltage'],
+                    row.get('ups_status', 'OL'),
+                    row.get('ups_load_pct', '0')
+                )
+            collected_rows.append(row)
+            if len(collected_rows) >= limit:
+                break
             
     # Reverse final list back to chronological order (oldest to newest)
     collected_rows.reverse()
@@ -171,17 +182,8 @@ def analyze_outages(ups_name):
     for filepath, is_gz in files:
         if not os.path.exists(filepath):
             continue
-        try:
-            if is_gz:
-                with gzip.open(filepath, 'rt', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    collected_rows.extend(list(reader))
-            else:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    collected_rows.extend(list(reader))
-        except Exception:
-            continue
+        file_rows = read_csv_rows(filepath, is_gz)
+        collected_rows.extend(file_rows)
             
     parsed_rows = []
     for row in collected_rows:
