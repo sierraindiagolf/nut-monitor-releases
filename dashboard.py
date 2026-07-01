@@ -10,7 +10,7 @@ import gzip
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PORT = 8080
-VERSION = "0.2"
+VERSION = "0.3"
 
 NUT_USER = os.environ.get('NUT_USER', 'monuser')
 NUT_PASSWORD = os.environ.get('NUT_PASSWORD', 'secretpassword')
