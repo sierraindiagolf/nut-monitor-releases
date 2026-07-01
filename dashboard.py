@@ -299,30 +299,35 @@ def analyze_outages(ups_name):
             avg_load = sum(ev['loads']) / len(ev['loads'])
             
             is_24v = start_v > 18.0
-            if is_24v:
-                # 24V system - baseline healthy rate is ~2.5 V/hour + load scale
-                baseline = 2.5 + (avg_load / 100.0) * 8.0
-                max_rate = 12.0
-            else:
-                # 12V system - baseline healthy rate is ~1.25 V/hour + load scale
-                baseline = 1.25 + (avg_load / 100.0) * 4.0
-                max_rate = 6.0
-                
-            if drop_rate <= baseline:
-                health_pct = 100.0
-            else:
-                health_pct = 100.0 - ((drop_rate - baseline) / (max_rate - baseline)) * 100.0
-                
-            health_pct = min(max(health_pct, 0.0), 100.0)
             
-            if health_pct >= 90.0:
-                rating = "Excellent"
-            elif health_pct >= 75.0:
-                rating = "Good"
-            elif health_pct >= 50.0:
-                rating = "Fair"
+            if duration_mins < 10.0:
+                health_pct = None
+                rating = "Too Short to Assess"
             else:
-                rating = "Replace Battery"
+                if is_24v:
+                    # 24V system - baseline healthy rate is ~2.5 V/hour + load scale
+                    baseline = 2.5 + (avg_load / 100.0) * 8.0
+                    max_rate = 12.0
+                else:
+                    # 12V system - baseline healthy rate is ~1.25 V/hour + load scale
+                    baseline = 1.25 + (avg_load / 100.0) * 4.0
+                    max_rate = 6.0
+                    
+                if drop_rate <= baseline:
+                    health_pct = 100.0
+                else:
+                    health_pct = 100.0 - ((drop_rate - baseline) / (max_rate - baseline)) * 100.0
+                    
+                health_pct = min(max(health_pct, 0.0), 100.0)
+                
+                if health_pct >= 90.0:
+                    rating = "Excellent"
+                elif health_pct >= 75.0:
+                    rating = "Good"
+                elif health_pct >= 50.0:
+                    rating = "Fair"
+                else:
+                    rating = "Replace Battery"
                 
             processed_events.append({
                 'date': ev['start_time'].split(' ')[0],
@@ -334,7 +339,7 @@ def analyze_outages(ups_name):
                 'voltage_drop': f"{v_drop:.2f}",
                 'avg_load_pct': f"{avg_load:.1f}",
                 'drop_rate_v_hr': f"{drop_rate:.2f}",
-                'health_score': f"{health_pct:.0f}",
+                'health_score': "N/A" if health_pct is None else f"{health_pct:.0f}",
                 'health_rating': rating
             })
         except Exception:
@@ -1671,18 +1676,24 @@ HTML_CONTENT = """<!DOCTYPE html>
                     const healthText = document.getElementById(`${id}-health-text`);
                     if (healthDot && healthText) {
                         if (events.length > 0) {
-                            const latestEvent = events[0];
-                            const score = latestEvent.health_score;
-                            const rating = latestEvent.health_rating;
-                            healthText.innerText = `Battery Health: ${score}% (${rating})`;
-                            
-                            healthDot.className = 'w-2.5 h-2.5 rounded-full';
-                            if (rating === 'Excellent' || rating === 'Good') {
-                                healthDot.classList.add('bg-emerald-500');
-                            } else if (rating === 'Fair') {
-                                healthDot.classList.add('bg-amber-500');
+                            // Find the first event with a valid health score (not N/A)
+                            const assessableEvent = events.find(e => e.health_score !== 'N/A');
+                            if (assessableEvent) {
+                                const score = assessableEvent.health_score;
+                                const rating = assessableEvent.health_rating;
+                                healthText.innerText = `Battery Health: ${score}% (${rating})`;
+                                
+                                healthDot.className = 'w-2.5 h-2.5 rounded-full';
+                                if (rating === 'Excellent' || rating === 'Good') {
+                                    healthDot.classList.add('bg-emerald-500');
+                                } else if (rating === 'Fair') {
+                                    healthDot.classList.add('bg-amber-500');
+                                } else {
+                                    healthDot.classList.add('bg-rose-500');
+                                }
                             } else {
-                                healthDot.classList.add('bg-rose-500');
+                                healthText.innerText = 'Battery Health: Unknown (Outages too short)';
+                                healthDot.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
                             }
                         } else {
                             healthText.innerText = 'Battery Health: Unknown (No events logged)';
@@ -1707,8 +1718,11 @@ HTML_CONTENT = """<!DOCTYPE html>
                             badgeColor = 'bg-rose-500/10 text-rose-400 border-rose-500/20';
                         } else if (ev.health_rating === 'Fair') {
                             badgeColor = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+                        } else if (ev.health_rating === 'Too Short to Assess') {
+                            badgeColor = 'bg-slate-500/10 text-slate-400 border-slate-500/20';
                         }
                         
+                        const scoreDisplay = ev.health_score === 'N/A' ? '' : `${ev.health_score}% `;
                         return `
                             <tr class="border-b border-white/5 hover:bg-white/5 transition-colors">
                                 <td class="py-3 font-medium">${ev.date}</td>
@@ -1717,7 +1731,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                                 <td class="py-3">${ev.drop_rate_v_hr} V/hr</td>
                                 <td class="py-3 text-right">
                                     <span class="px-2 py-0.5 rounded-full text-[10px] font-bold border ${badgeColor}">
-                                        ${ev.health_score}% (${ev.health_rating})
+                                        ${scoreDisplay}(${ev.health_rating})
                                     </span>
                                 </td>
                             </tr>
