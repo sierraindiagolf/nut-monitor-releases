@@ -20,6 +20,7 @@ Type=simple
 User=nut
 Group=nut
 WorkingDirectory=/opt/nut-dashboard
+EnvironmentFile=-/opt/nut-dashboard/.env
 ExecStart=/usr/bin/python3 /opt/nut-dashboard/dashboard.py
 Restart=always
 RestartSec=5

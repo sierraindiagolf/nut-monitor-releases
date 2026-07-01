@@ -12,6 +12,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 PORT = 8080
 VERSION = "0.1"
 
+NUT_USER = os.environ.get('NUT_USER', 'monuser')
+NUT_PASSWORD = os.environ.get('NUT_PASSWORD', 'secretpassword')
+
 CONFIG_PATH = '/opt/nut-dashboard/config.json'
 
 def load_config():
@@ -518,7 +521,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("Invalid UPS name")
                 
                 result = subprocess.run([
-                    'upscmd', '-u', 'monuser', '-p', 'secretpassword',
+                    'upscmd', '-u', NUT_USER, '-p', NUT_PASSWORD,
                     f'{ups_name}@localhost', 'beeper.toggle'
                 ], capture_output=True, text=True, timeout=5)
                 
@@ -556,7 +559,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 cmd = cmd_map[action]
                 
                 result = subprocess.run([
-                    'upscmd', '-u', 'monuser', '-p', 'secretpassword',
+                    'upscmd', '-u', NUT_USER, '-p', NUT_PASSWORD,
                     f'{ups_name}@localhost', cmd
                 ], capture_output=True, text=True, timeout=5)
                 
@@ -597,7 +600,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 
                 result = subprocess.run([
                     'upsrw', '-s', f'{var_name}={var_val}',
-                    '-u', 'monuser', '-p', 'secretpassword',
+                    '-u', NUT_USER, '-p', NUT_PASSWORD,
                     f'{ups_name}@localhost'
                 ], capture_output=True, text=True, timeout=5)
                 
