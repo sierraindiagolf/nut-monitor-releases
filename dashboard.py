@@ -652,7 +652,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 def restart_soon():
                     import time
                     time.sleep(1.0)
-                    sys.exit(0)
+                    os._exit(0)
                 threading.Thread(target=restart_soon).start()
                 
             except Exception as e:
