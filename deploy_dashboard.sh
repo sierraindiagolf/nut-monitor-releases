@@ -3,10 +3,17 @@ set -e
 
 # Create opt directory
 mkdir -p /opt/nut-dashboard
-mv /tmp/dashboard.py /opt/nut-dashboard/dashboard.py
+
+if [ -f /tmp/dashboard.pyz ]; then
+    mv /tmp/dashboard.pyz /opt/nut-dashboard/dashboard.pyz
+fi
+
+# Clean up old single file dashboard
+rm -f /opt/nut-dashboard/dashboard.py
+
 chown -R nut:nut /opt/nut-dashboard
 chmod 750 /opt/nut-dashboard
-chmod 740 /opt/nut-dashboard/dashboard.py
+chmod 740 /opt/nut-dashboard/dashboard.pyz
 
 # Create systemd service file
 cat << 'EOF' > /etc/systemd/system/nut-dashboard.service
@@ -21,7 +28,7 @@ User=nut
 Group=nut
 WorkingDirectory=/opt/nut-dashboard
 EnvironmentFile=-/opt/nut-dashboard/.env
-ExecStart=/usr/bin/python3 /opt/nut-dashboard/dashboard.py
+ExecStart=/usr/bin/python3 /opt/nut-dashboard/dashboard.pyz
 Restart=always
 RestartSec=5
 
