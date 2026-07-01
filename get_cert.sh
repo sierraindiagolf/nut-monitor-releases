@@ -13,14 +13,25 @@ sed -i 's/localhost shoim-1.bavariaduo.home/localhost shoim-1.bavariaduo.ovh/g' 
 echo "Installing Certbot and OVH DNS plugin..."
 apt-get update && apt-get install -y certbot python3-certbot-dns-ovh
 
-# 3. Create the OVH credentials configuration
+# 3. Load and write the OVH credentials configuration
 echo "Writing OVH credentials configuration..."
+if [ -f /opt/nut-dashboard/.env ]; then
+    source /opt/nut-dashboard/.env
+elif [ -f .env ]; then
+    source .env
+fi
+
+if [ -z "$OVH_AK" ] || [ -z "$OVH_AS" ] || [ -z "$OVH_CK" ]; then
+    echo "Error: OVH credentials (OVH_AK, OVH_AS, OVH_CK) are not set in .env file."
+    exit 1
+fi
+
 mkdir -p /etc/letsencrypt
-cat << 'EOF' > /etc/letsencrypt/ovh.ini
+cat << EOF > /etc/letsencrypt/ovh.ini
 dns_ovh_endpoint = ovh-eu
-dns_ovh_application_key = 
-dns_ovh_application_secret = 
-dns_ovh_consumer_key = 
+dns_ovh_application_key = $OVH_AK
+dns_ovh_application_secret = $OVH_AS
+dns_ovh_consumer_key = $OVH_CK
 EOF
 
 chmod 600 /etc/letsencrypt/ovh.ini

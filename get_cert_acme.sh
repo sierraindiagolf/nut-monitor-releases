@@ -16,11 +16,22 @@ curl https://get.acme.sh | sh -s email=sieraindiagolf@gmail.com
 . "$HOME/.acme.sh/acme.sh.env" || true
 export PATH="$HOME/.acme.sh:$PATH"
 
-# 3. Request the certificate from Let's Encrypt using OVH DNS challenge
+# 3. Load and request the certificate from Let's Encrypt using OVH DNS challenge
 echo "Requesting SSL certificate via acme.sh..."
-export OVH_AK=""
-export OVH_AS=""
-export OVH_CK=""
+if [ -f /opt/nut-dashboard/.env ]; then
+    source /opt/nut-dashboard/.env
+elif [ -f .env ]; then
+    source .env
+fi
+
+if [ -z "$OVH_AK" ] || [ -z "$OVH_AS" ] || [ -z "$OVH_CK" ]; then
+    echo "Error: OVH credentials (OVH_AK, OVH_AS, OVH_CK) are not set in .env file."
+    exit 1
+fi
+
+export OVH_AK="$OVH_AK"
+export OVH_AS="$OVH_AS"
+export OVH_CK="$OVH_CK"
 
 # Issue certificate (Let's Encrypt is the default now or we specify --server letsencrypt)
 ~/.acme.sh/acme.sh --issue --server letsencrypt --dns dns_ovh -d shoim-1.bavariaduo.ovh
