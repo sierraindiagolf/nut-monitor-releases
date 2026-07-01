@@ -128,8 +128,21 @@ def read_csv_rows(filepath, is_gz):
         pass
     return rows
 
-def get_ups_history(ups_name):
-    limit = 2880  # 24 hours of data at 30s intervals
+def get_ups_history(ups_name, start_str=None, end_str=None):
+    from datetime import datetime, timedelta
+    
+    # Standardize input strings to match the CSV timestamp format (YYYY-MM-DD HH:MM:SS)
+    if start_str:
+        start_str = start_str.replace('T', ' ').split('.')[0].replace('Z', '')
+    else:
+        # Default start to 24 hours ago
+        start_str = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        
+    if end_str:
+        end_str = end_str.replace('T', ' ').split('.')[0].replace('Z', '')
+    else:
+        end_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
     collected_rows = []
     
     # List of log files to read, from newest to oldest
@@ -142,15 +155,28 @@ def get_ups_history(ups_name):
         files.append((f'/mnt/usb_logs/nut/{ups_name}.csv.{i}.gz', True))
         
     for filepath, is_gz in files:
-        if len(collected_rows) >= limit:
-            break
         if not os.path.exists(filepath):
             continue
             
         file_rows = read_csv_rows(filepath, is_gz)
         # Process rows from newest to oldest in this file
         file_rows.reverse()
+        
+        reached_start = False
         for row in file_rows:
+            ts = row.get('timestamp')
+            if not ts:
+                continue
+                
+            # Skip rows newer than end_str
+            if ts > end_str:
+                continue
+                
+            # Stop reading once we go older than start_str
+            if ts < start_str:
+                reached_start = True
+                break
+                
             # Estimate charge if missing/NA but battery voltage is present
             if (row.get('battery_charge_pct') == 'NA' or not row.get('battery_charge_pct')) and row.get('battery_voltage') != 'NA':
                 row['battery_charge_pct'] = estimate_charge(
@@ -159,8 +185,9 @@ def get_ups_history(ups_name):
                     row.get('ups_load_pct', '0')
                 )
             collected_rows.append(row)
-            if len(collected_rows) >= limit:
-                break
+            
+        if reached_start:
+            break
             
     # Reverse final list back to chronological order (oldest to newest)
     collected_rows.reverse()
@@ -368,9 +395,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
+            query_params = urllib.parse.parse_qs(url.query)
+            start_str = query_params.get('start', [None])[0]
+            end_str = query_params.get('end', [None])[0]
             history = {
-                "ups1": get_ups_history("ups1"),
-                "ups2": get_ups_history("ups2")
+                "ups1": get_ups_history("ups1", start_str, end_str),
+                "ups2": get_ups_history("ups2", start_str, end_str)
             }
             self.wfile.write(json.dumps(history).encode('utf-8'))
         elif url.path == '/api/battery-health':
@@ -1463,7 +1493,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                     btn.className = 'px-3 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-white';
                 }
             });
-            renderCharts();
+            fetchHistory();
         }
 
         function selectChartUPS(upsId) {
@@ -1484,7 +1514,20 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         async function fetchHistory() {
             try {
-                const res = await fetch('/api/history');
+                const now = new Date();
+                let msOffset = 24 * 60 * 60 * 1000;
+                if (currentRange === '1h') msOffset = 1 * 60 * 60 * 1000;
+                else if (currentRange === '6h') msOffset = 6 * 60 * 60 * 1000;
+                else if (currentRange === '12h') msOffset = 12 * 60 * 60 * 1000;
+                
+                const start = new Date(now.getTime() - msOffset);
+                const pad = num => String(num).padStart(2, '0');
+                const formatDate = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+                
+                const startStr = formatDate(start);
+                const endStr = formatDate(now);
+                
+                const res = await fetch(`/api/history?start=${encodeURIComponent(startStr)}&end=${encodeURIComponent(endStr)}`);
                 rawHistoryData = await res.json();
                 renderCharts();
             } catch (err) {
