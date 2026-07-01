@@ -4,10 +4,13 @@ import os
 import csv
 import subprocess
 import urllib.parse
+import urllib.request
+import sys
 import gzip
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PORT = 8080
+VERSION = "0.1"
 
 CONFIG_PATH = '/opt/nut-dashboard/config.json'
 
@@ -30,6 +33,33 @@ def save_config(config):
     except Exception:
         pass
 
+def fetch_github_tags():
+    url = "https://api.github.com/repos/sierraindiagolf/nut-monitor-releases/tags"
+    req = urllib.request.Request(
+        url, 
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib/3.x'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            tags = [tag.get('name') for tag in data if 'name' in tag]
+            return tags
+    except Exception as e:
+        sys.stderr.write(f"Error fetching github tags: {e}\n")
+        return []
+
+def download_github_file(tag):
+    url = f"https://raw.githubusercontent.com/sierraindiagolf/nut-monitor-releases/{tag}/dashboard.py"
+    req = urllib.request.Request(
+        url, 
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib/3.x'}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.read()
+    except Exception as e:
+        sys.stderr.write(f"Error downloading dashboard.py at {tag}: {e}\n")
+        return None
 
 def estimate_charge(voltage_str, status_str="OL", load_str="0"):
     try:
@@ -417,6 +447,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "ups2": analyze_outages("ups2")
             }
             self.wfile.write(json.dumps(health_data).encode('utf-8'))
+        elif url.path == '/api/firmware/check':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            
+            tags = fetch_github_tags()
+            latest_version = VERSION
+            update_available = False
+            versions_list = []
+            
+            for tag in tags:
+                v_clean = tag.lstrip('v')
+                versions_list.append(tag)
+                try:
+                    curr_parts = [int(p) for p in VERSION.split('.')]
+                    tag_parts = [int(p) for p in v_clean.split('.')]
+                    if tag_parts > curr_parts:
+                        latest_clean = latest_version.lstrip('v')
+                        latest_parts = [int(p) for p in latest_clean.split('.')]
+                        if tag_parts > latest_parts:
+                            latest_version = tag
+                            update_available = True
+                except Exception:
+                    pass
+            
+            response = {
+                "current_version": f"v{VERSION}",
+                "latest_version": latest_version if latest_version.startswith('v') else f"v{latest_version}",
+                "update_available": update_available,
+                "versions": versions_list
+            }
+            self.wfile.write(json.dumps(response).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
@@ -551,6 +613,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        elif url.path == '/api/firmware/update':
+            try:
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                req_data = json.loads(post_data.decode('utf-8'))
+                version = req_data.get('version')
+                if not version:
+                    raise ValueError("Version is required")
+                
+                code_bytes = download_github_file(version)
+                if not code_bytes:
+                    raise RuntimeError(f"Could not download dashboard.py for version {version}")
+                
+                current_file_path = os.path.abspath(__file__)
+                temp_path = current_file_path + '.tmp'
+                with open(temp_path, 'wb') as f:
+                    f.write(code_bytes)
+                
+                res = subprocess.run(['python3', '-m', 'py_compile', temp_path], capture_output=True)
+                if res.returncode != 0:
+                    err_msg = res.stderr.decode('utf-8').strip()
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    raise RuntimeError(f"Syntax validation failed:\n{err_msg}")
+                
+                os.replace(temp_path, current_file_path)
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success", "message": f"Successfully updated to {version}. Restarting server..."}).encode('utf-8'))
+                
+                import threading
+                def restart_soon():
+                    import time
+                    time.sleep(1.0)
+                    sys.exit(0)
+                threading.Thread(target=restart_soon).start()
+                
+            except Exception as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
@@ -600,9 +706,16 @@ HTML_CONTENT = """<!DOCTYPE html>
                     <p class="text-sm text-slate-400">Orange Pi Zero 3 Home Server</p>
                 </div>
             </div>
-            <div class="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-full">
-                <span class="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
-                <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Live Monitoring Active</span>
+            <div class="flex items-center gap-3">
+                <div id="firmware-update-badge" class="hidden flex items-center gap-2 bg-indigo-500/20 border border-indigo-500/30 px-4 py-2 rounded-full cursor-pointer hover:bg-indigo-500/30 transition-all duration-300 animate-pulse-soft" onclick="scrollToFirmwareSettings()">
+                    <span class="w-2 h-2 bg-indigo-400 rounded-full"></span>
+                    <span class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">🎁 Update Available</span>
+                </div>
+                
+                <div class="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-full">
+                    <span class="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
+                    <span class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Live Monitoring Active</span>
+                </div>
             </div>
         </header>
 
@@ -1005,6 +1118,60 @@ HTML_CONTENT = """<!DOCTYPE html>
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- System & Firmware Section -->
+        <section id="section-firmware" class="glass rounded-3xl p-6 space-y-6">
+            <div>
+                <h2 class="text-xl font-bold tracking-tight">System Settings & Firmware</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Manage dashboard system updates and version control</p>
+            </div>
+            
+            <div class="grid md:grid-cols-2 gap-6">
+                <!-- Firmware Info & Update Panel -->
+                <div class="bg-slate-950/40 border border-white/5 p-4 rounded-2xl space-y-4">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <span class="text-xs uppercase text-slate-400 font-semibold tracking-wider block">Dashboard Version</span>
+                            <span id="current-version-display" class="text-sm font-bold text-slate-200">v0.1</span>
+                        </div>
+                        <button id="btn-check-updates" onclick="checkForUpdates()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-xs font-bold text-white transition-all shadow shadow-indigo-600/20">
+                            Check for Updates
+                        </button>
+                    </div>
+                    
+                    <div id="update-status-container" class="hidden text-xs space-y-2 p-3 bg-white/5 border border-white/5 rounded-xl">
+                        <div class="flex items-center justify-between">
+                            <span id="update-status-text" class="font-medium text-slate-300">Checking...</span>
+                            <span id="update-available-badge" class="hidden px-2 py-0.5 rounded-full text-[9px] font-bold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">UPDATE AVAILABLE</span>
+                        </div>
+                        <div id="version-selector-container" class="hidden flex flex-col gap-2 pt-2 border-t border-white/5">
+                            <label for="version-select" class="text-[10px] text-slate-400 font-medium">Select target version to install (upgrade/downgrade):</label>
+                            <div class="flex items-center gap-2">
+                                <select id="version-select" class="flex-1 bg-slate-900 border border-white/10 rounded-xl px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                                    <!-- Populated dynamically -->
+                                </select>
+                                <button id="btn-install-version" onclick="installSelectedVersion()" class="bg-purple-600 hover:bg-purple-700 text-white rounded-xl px-3 py-1.5 text-xs font-bold transition-all shadow shadow-purple-600/20">
+                                    Install
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Update Progress & Log -->
+                <div id="update-progress-card" class="hidden bg-slate-950/40 border border-white/5 p-4 rounded-2xl flex flex-col justify-between space-y-4">
+                    <div>
+                        <span class="text-xs uppercase text-slate-400 font-semibold tracking-wider block mb-1">Update Progress</span>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-white/10 mt-2">
+                            <div id="update-progress-bar" class="bg-indigo-500 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div id="update-log" class="bg-slate-900/60 rounded-xl p-3 border border-white/5 text-[10px] font-mono h-24 overflow-y-auto space-y-1 text-slate-400">
+                        <!-- Progress log entries -->
                     </div>
                 </div>
             </div>
@@ -2012,10 +2179,178 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }
 
+        function scrollToFirmwareSettings() {
+            const el = document.getElementById('section-firmware');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function checkFirmwareOnLoad() {
+            try {
+                const res = await fetch('/api/firmware/check');
+                if (res.ok) {
+                    const data = await res.json();
+                    
+                    const curDisplays = ['current-version-display', 'system-version-card-text'];
+                    curDisplays.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.innerText = data.current_version;
+                    });
+
+                    if (data.update_available) {
+                        const badge = document.getElementById('firmware-update-badge');
+                        if (badge) {
+                            badge.classList.remove('hidden');
+                            badge.querySelector('span:last-child').innerText = `🎁 Update Available (${data.latest_version})`;
+                        }
+                        const appBadge = document.getElementById('update-available-badge');
+                        if (appBadge) appBadge.classList.remove('hidden');
+                    }
+                }
+            } catch (err) {
+                console.error("Error auto-checking updates:", err);
+            }
+        }
+
+        async function checkForUpdates() {
+            const btn = document.getElementById('btn-check-updates');
+            const statusContainer = document.getElementById('update-status-container');
+            const statusText = document.getElementById('update-status-text');
+            const selectorContainer = document.getElementById('version-selector-container');
+            const select = document.getElementById('version-select');
+            const appBadge = document.getElementById('update-available-badge');
+            
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            statusContainer.classList.remove('hidden');
+            statusText.innerText = "Checking for updates...";
+            appBadge.classList.add('hidden');
+            selectorContainer.classList.add('hidden');
+            
+            try {
+                const res = await fetch('/api/firmware/check');
+                if (res.ok) {
+                    const data = await res.json();
+                    
+                    if (data.versions && data.versions.length > 0) {
+                        statusText.innerText = data.update_available 
+                            ? `New update found: ${data.latest_version} (Current: ${data.current_version})`
+                            : `Your software is up to date (Current: ${data.current_version})`;
+                            
+                        if (data.update_available) {
+                            appBadge.classList.remove('hidden');
+                        }
+                        
+                        select.innerHTML = data.versions.map(v => 
+                            `<option value="${v}">${v}${v === data.current_version ? ' (Current)' : ''}</option>`
+                        ).join('');
+                        
+                        selectorContainer.classList.remove('hidden');
+                    } else {
+                        statusText.innerText = "No versions found on repository releases.";
+                    }
+                } else {
+                    statusText.innerText = "Failed to fetch version repository.";
+                }
+            } catch (err) {
+                console.error("Error manual checking updates:", err);
+                statusText.innerText = "Error contacting update server.";
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        let updatePollingInterval = null;
+
+        async function installSelectedVersion() {
+            const select = document.getElementById('version-select');
+            const targetVersion = select.value;
+            if (!targetVersion) return;
+            
+            if (!confirm(`Are you sure you want to install version ${targetVersion}?`)) {
+                return;
+            }
+            
+            const progressCard = document.getElementById('update-progress-card');
+            const progressBar = document.getElementById('update-progress-bar');
+            const log = document.getElementById('update-log');
+            const checkBtn = document.getElementById('btn-check-updates');
+            const installBtn = document.getElementById('btn-install-version');
+            
+            checkBtn.disabled = true;
+            installBtn.disabled = true;
+            progressCard.classList.remove('hidden');
+            progressBar.style.width = '10%';
+            log.innerHTML = `<div>[info] Initiating installation of ${targetVersion}...</div>`;
+            
+            try {
+                log.innerHTML += `<div>[info] Downloading code from GitHub...</div>`;
+                progressBar.style.width = '30%';
+                
+                const res = await fetch('/api/firmware/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ version: targetVersion })
+                });
+                
+                const data = await res.json();
+                if (res.ok && data.status === 'success') {
+                    progressBar.style.width = '70%';
+                    log.innerHTML += `<div>[success] ${data.message}</div>`;
+                    log.innerHTML += `<div>[info] Reconnecting to system dashboard...</div>`;
+                    progressBar.style.width = '90%';
+                    
+                    let pollCount = 0;
+                    updatePollingInterval = setInterval(async () => {
+                        pollCount++;
+                        log.innerHTML += `<div>[info] Connection attempt ${pollCount}...</div>`;
+                        log.scrollTop = log.scrollHeight;
+                        
+                        try {
+                            const testRes = await fetch('/api/status');
+                            if (testRes.ok) {
+                                clearInterval(updatePollingInterval);
+                                progressBar.style.width = '100%';
+                                log.innerHTML += `<div>[success] Dashboard is online! Reloading page...</div>`;
+                                log.scrollTop = log.scrollHeight;
+                                setTimeout(() => {
+                                    window.location.reload();
+                                }, 1500);
+                            }
+                        } catch (e) {
+                            // Expected offline during reboot
+                        }
+                        
+                        if (pollCount > 30) {
+                            clearInterval(updatePollingInterval);
+                            log.innerHTML += `<div>[error] Connection timeout. Please check service status on the server.</div>`;
+                            log.scrollTop = log.scrollHeight;
+                            checkBtn.disabled = false;
+                            installBtn.disabled = false;
+                        }
+                    }, 2000);
+                    
+                } else {
+                    progressBar.style.width = '0%';
+                    log.innerHTML += `<div class="text-rose-400">[error] ${data.error || 'Update failed'}</div>`;
+                    checkBtn.disabled = false;
+                    installBtn.disabled = false;
+                }
+            } catch (err) {
+                console.error("Installation network error:", err);
+                progressBar.style.width = '0%';
+                log.innerHTML += `<div class="text-rose-400">[error] Connection lost during update command.</div>`;
+                checkBtn.disabled = false;
+                installBtn.disabled = false;
+            }
+            log.scrollTop = log.scrollHeight;
+        }
+
         // Init
         fetchStatus();
         fetchHistory();
         fetchBatteryHealth();
+        checkFirmwareOnLoad();
         
         // Refresh loops
         setInterval(fetchStatus, 5000);         // Live status every 5s
